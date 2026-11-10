@@ -62,6 +62,22 @@ agente-debug/
 | [memory.md](memory.md) | Fornecer histórico e decisões anteriores como contexto, sujeito a informações desatualizadas. |
 | [casos/calculadora.py](casos/calculadora.py) | Disponibilizar um caso pequeno para experimentar a investigação. |
 
+### Organização de `main.py`
+
+O programa está dividido em funções com responsabilidades definidas:
+
+| Função | Responsabilidade |
+| --- | --- |
+| `carregar_contexto()` | Ler o manual e a memória da pasta do projeto. |
+| `receber_erro()` | Receber a entrada até `FIM` e recusar conteúdo vazio. |
+| `montar_pedido()` | Combinar o erro atual com a memória histórica. |
+| `consultar_gemini()` | Consultar a API e apresentar informações de falha. |
+| `executar_ferramenta()` | Validar a solicitação e retornar o resultado ou o erro da ferramenta. |
+| `investigar()` | Coordenar as consultas ao modelo, as ferramentas e os limites. |
+| `main()` | Iniciar o fluxo e garantir o fechamento do cliente da API. |
+
+O bloco `if __name__ == "__main__":` chama `main()` quando o arquivo é executado diretamente. Importar o módulo permite acessar suas funções sem iniciar a entrada pelo terminal nem criar o cliente da API.
+
 ## Requisitos
 
 - Python 3.10 ou superior.
@@ -166,6 +182,7 @@ O manual, o erro informado e os resultados das ferramentas também são enviados
 
 ## Próximas melhorias
 
+- [x] Organizar `main.py` em funções e adicionar um ponto de entrada explícito.
 - [ ] Separar a interface de terminal, o cliente da API e o ciclo de investigação.
 - [ ] Tornar a memória opcional na inicialização e selecionar apenas o contexto relevante.
 - [ ] Configurar explicitamente os tempos limite e a política de repetição do SDK.

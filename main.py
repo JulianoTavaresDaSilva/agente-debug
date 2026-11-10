@@ -66,37 +66,49 @@ def consultar_gemini(client, **parametros):
         ) from None
 
 
-pasta_projeto = Path(__file__).resolve().parent
+def carregar_contexto() -> tuple[str, str]:
+    """Carrega o manual e a memória a partir da pasta do projeto."""
+    pasta_projeto = Path(__file__).resolve().parent
 
-instrucoes = (pasta_projeto / "agent.md").read_text(
-    encoding="utf-8"
-)
-print("Manual agent.md carregado.")
+    instrucoes = (pasta_projeto / "agent.md").read_text(
+        encoding="utf-8"
+    )
+    print("Manual agent.md carregado.")
 
-memoria = (pasta_projeto / "memory.md").read_text(
-    encoding="utf-8"
-)
-print("Memória memory.md carregada.")
+    memoria = (pasta_projeto / "memory.md").read_text(
+        encoding="utf-8"
+    )
+    print("Memória memory.md carregada.")
 
-print("\nCole o erro e o contexto abaixo.")
-print("Ao terminar, digite FIM em uma linha separada.")
+    return instrucoes, memoria
 
-linhas = []
 
-while True:
-    linha = input()
+def receber_erro() -> str:
+    """Recebe o erro pelo terminal até encontrar uma linha com FIM."""
+    print("\nCole o erro e o contexto abaixo.")
+    print("Ao terminar, digite FIM em uma linha separada.")
 
-    if linha.strip() == "FIM":
-        break
+    linhas = []
 
-    linhas.append(linha)
+    while True:
+        linha = input()
 
-erro = "\n".join(linhas)
+        if linha.strip() == "FIM":
+            break
 
-if not erro.strip():
-    raise SystemExit("Nenhum erro foi informado.")
+        linhas.append(linha)
 
-pedido = f"""
+    erro = "\n".join(linhas)
+
+    if not erro.strip():
+        raise SystemExit("Nenhum erro foi informado.")
+
+    return erro
+
+
+def montar_pedido(erro: str, memoria: str) -> str:
+    """Monta o pedido com o erro atual e a memória como contexto histórico."""
+    return f"""
 Use a memória somente como contexto histórico.
 Ela pode conter informações desatualizadas.
 
@@ -114,14 +126,62 @@ Use listar_arquivos quando precisar descobrir os arquivos disponíveis.
 Os caminhos recebidos por ler_arquivo são relativos à pasta casos.
 """
 
-ferramentas = [
-    DESCRICAO_LER_ARQUIVO,
-    DESCRICAO_LISTAR_ARQUIVOS,
-]
 
-client = genai.Client()
+def executar_ferramenta(nome: str, argumentos) -> dict:
+    """Valida a solicitação e retorna o resultado ou o erro da ferramenta."""
+    print(f"\nFerramenta solicitada: {nome}")
 
-try:
+    try:
+        if argumentos is None:
+            argumentos = {}
+
+        if not isinstance(argumentos, dict):
+            raise ValueError("Os argumentos devem ser um dicionário.")
+
+        if nome == "listar_arquivos":
+            if argumentos:
+                raise ValueError(
+                    "listar_arquivos não recebe argumentos."
+                )
+
+            arquivos = listar_arquivos()
+            resultado = {"sucesso": True, "arquivos": arquivos}
+            print(f"Arquivos encontrados: {arquivos}")
+
+        elif nome == "ler_arquivo":
+            if set(argumentos) != {"caminho"}:
+                raise ValueError(
+                    "Informe somente o argumento caminho."
+                )
+
+            caminho = argumentos["caminho"]
+
+            if not isinstance(caminho, str) or not caminho.strip():
+                raise ValueError(
+                    "O caminho deve ser um texto não vazio."
+                )
+
+            conteudo = ler_arquivo(caminho)
+            resultado = {"sucesso": True, "conteudo": conteudo}
+            print(f"Arquivo lido: {caminho}")
+
+        else:
+            raise ValueError("Ferramenta não permitida.")
+
+    except (OSError, ValueError, UnicodeError) as falha:
+        resultado = {"sucesso": False, "erro": str(falha)}
+        print(f"Falha na ferramenta: {falha}")
+
+    return resultado
+
+
+def investigar(client, instrucoes: str, pedido: str) -> None:
+    """Coordena as consultas ao Gemini e o ciclo de ferramentas."""
+    ferramentas = [
+        DESCRICAO_LER_ARQUIVO,
+        DESCRICAO_LISTAR_ARQUIVOS,
+    ]
+
     print("\nConsultando o Gemini...")
 
     resposta = consultar_gemini(
@@ -155,50 +215,9 @@ try:
         resultados = []
 
         for chamada in chamadas:
-            print(f"\nFerramenta solicitada: {chamada.name}")
-
-            try:
-                argumentos = chamada.arguments
-
-                if argumentos is None:
-                    argumentos = {}
-
-                if not isinstance(argumentos, dict):
-                    raise ValueError("Os argumentos devem ser um dicionário.")
-
-                if chamada.name == "listar_arquivos":
-                    if argumentos:
-                        raise ValueError(
-                            "listar_arquivos não recebe argumentos."
-                        )
-
-                    arquivos = listar_arquivos()
-                    resultado = {"sucesso": True, "arquivos": arquivos}
-                    print(f"Arquivos encontrados: {arquivos}")
-
-                elif chamada.name == "ler_arquivo":
-                    if set(argumentos) != {"caminho"}:
-                        raise ValueError(
-                            "Informe somente o argumento caminho."
-                        )
-
-                    caminho = argumentos["caminho"]
-
-                    if not isinstance(caminho, str) or not caminho.strip():
-                        raise ValueError(
-                            "O caminho deve ser um texto não vazio."
-                        )
-
-                    conteudo = ler_arquivo(caminho)
-                    resultado = {"sucesso": True, "conteudo": conteudo}
-                    print(f"Arquivo lido: {caminho}")
-
-                else:
-                    raise ValueError("Ferramenta não permitida.")
-
-            except (OSError, ValueError, UnicodeError) as falha:
-                resultado = {"sucesso": False, "erro": str(falha)}
-                print(f"Falha na ferramenta: {falha}")
+            resultado = executar_ferramenta(
+                chamada.name, chamada.arguments
+            )
 
             resultados.append({
                 "type": "function_result",
@@ -221,5 +240,20 @@ try:
             previous_interaction_id=resposta.id
         )
 
-finally:
-    client.close()
+
+def main() -> None:
+    """Prepara a investigação e garante o fechamento do cliente da API."""
+    instrucoes, memoria = carregar_contexto()
+    erro = receber_erro()
+    pedido = montar_pedido(erro, memoria)
+
+    client = genai.Client()
+
+    try:
+        investigar(client, instrucoes, pedido)
+    finally:
+        client.close()
+
+
+if __name__ == "__main__":
+    main()
