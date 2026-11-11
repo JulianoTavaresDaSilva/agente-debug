@@ -46,6 +46,10 @@ O modelo solicita as consultas; as funções Python controlam o acesso aos arqui
 agente-debug/
 ├── casos/
 │   └── calculadora.py   # Exemplo com bug intencional
+├── tests/
+│   ├── __init__.py
+│   ├── test_ferramentas.py  # Arquivos e limites de acesso
+│   └── test_main.py         # Fluxo com respostas simuladas
 ├── .gitignore          # Arquivos locais ignorados pelo Git
 ├── agent.md            # Manual e regras de investigação
 ├── ferramentas.py      # Ferramentas e suas descrições para o modelo
@@ -153,6 +157,30 @@ O agente pode solicitar a leitura do arquivo para apoiar o diagnóstico. Nesse c
 
 Esse exemplo descreve uma investigação possível. A sequência de ferramentas e o texto da análise dependem da resposta do modelo.
 
+## Testes locais
+
+Os testes usam `unittest` e `unittest.mock`, que fazem parte da biblioteca padrão do Python. Instale a dependência do projeto conforme as instruções acima; não é necessário instalar um framework de testes adicional.
+
+Execute na raiz do projeto:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+A suíte verifica:
+
+- Leitura em UTF-8, limite de caracteres e listagem dos arquivos autorizados.
+- Recusa de caminhos externos, extensões proibidas e arquivos inexistentes.
+- Validação dos argumentos e conversão de falhas das ferramentas em resultados.
+- Continuidade das consultas e associação dos resultados às chamadas por `call_id`.
+- Limites de consultas e de ferramentas por resposta.
+- Fechamento do cliente em caso de sucesso ou falha da API.
+- Importação de `main.py` sem iniciar o terminal ou criar o cliente da API.
+
+As ferramentas são verificadas com arquivos temporários criados dentro de `tests/` e removidos ao final de cada teste. O cliente do Gemini é simulado e conexões de rede são bloqueadas nos testes do fluxo. Não é necessário configurar uma chave da API nem consumir sua cota para executar a suíte.
+
+O teste de links simbólicos pode ser marcado como ignorado (`skipped`) quando o sistema não permitir sua criação. Os testes verificam o comportamento local do programa; não avaliam a qualidade dos diagnósticos nem a disponibilidade do Gemini.
+
 ## Ferramentas e limites
 
 | Ferramenta | Argumentos | Comportamento |
@@ -186,5 +214,5 @@ O manual, o erro informado e os resultados das ferramentas também são enviados
 - [ ] Separar a interface de terminal, o cliente da API e o ciclo de investigação.
 - [ ] Tornar a memória opcional na inicialização e selecionar apenas o contexto relevante.
 - [ ] Configurar explicitamente os tempos limite e a política de repetição do SDK.
-- [ ] Adicionar testes locais das ferramentas e do ciclo com respostas simuladas.
+- [x] Adicionar testes locais das ferramentas e do ciclo com respostas simuladas.
 - [ ] Implementar o registro validado de memória, preservando evidências e registros anteriores.
