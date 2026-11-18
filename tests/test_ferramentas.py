@@ -7,6 +7,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import ferramentas
+from configuracao import Configuracao, ErroConfiguracao
 
 
 class TestFerramentas(unittest.TestCase):
@@ -103,14 +104,14 @@ class TestFerramentas(unittest.TestCase):
         with self.assertRaises(UnicodeError):
             ferramentas.ler_arquivo("invalido.py")
 
-    def test_lista_apenas_python_da_pasta_em_ordem(self):
+    def test_lista_python_em_subpastas_em_ordem(self):
         for nome in ("zeta.py", "alfa.PY", "beta.py", "notas.txt"):
             self.criar_arquivo(nome)
         self.criar_arquivo("subpasta/oculto.py")
         (self.casos / "diretorio.py").mkdir()
 
         self.assertEqual(
-            ferramentas.listar_arquivos(), ["alfa.PY", "beta.py", "zeta.py"]
+            ferramentas.listar_arquivos(), ["alfa.PY", "beta.py", "subpasta/oculto.py", "zeta.py"]
         )
 
     def test_lista_vazia_quando_nao_ha_arquivos(self):
@@ -120,8 +121,81 @@ class TestFerramentas(unittest.TestCase):
         with patch.object(
             ferramentas, "PASTA_AUTORIZADA", self.raiz / "ausente"
         ):
-            with self.assertRaises(FileNotFoundError):
+            with self.assertRaises(ErroConfiguracao):
                 ferramentas.listar_arquivos()
+
+    def test_nao_lista_nem_le_diretorios_excluidos(self):
+        for pasta in (".git", ".venv", "__pycache__", "node_modules", ".oculta"):
+            self.criar_arquivo(f"{pasta}/segredo.py")
+            with self.subTest(pasta=pasta):
+                retorno = ferramentas.FerramentasProjeto().executar(
+                    "ler_arquivo", {"caminho": f"{pasta}/segredo.py"}
+                )
+                self.assertFalse(retorno["sucesso"])
+        self.assertEqual(ferramentas.listar_arquivos(), [])
+
+    def test_devolve_faixa_com_numeracao(self):
+        self.criar_arquivo("codigo.py", "a = 1\nb = 2\nc = 3\n")
+        sessao = ferramentas.FerramentasProjeto()
+        retorno = sessao.executar("ler_arquivo", {
+            "caminho": "codigo.py", "linha_inicio": 2, "linha_fim": 3,
+        })
+        self.assertEqual(retorno["conteudo"], "2: b = 2\n3: c = 3")
+        self.assertEqual((retorno["linha_inicio"], retorno["linha_fim"]), (2, 3))
+        self.assertEqual(sessao.leituras[0].caminho, "codigo.py")
+
+    def test_recusa_intervalos_invalidos(self):
+        self.criar_arquivo("codigo.py")
+        sessao = ferramentas.FerramentasProjeto()
+        for argumentos in (
+            {"linha_inicio": 0}, {"linha_inicio": True}, {"linha_fim": "2"},
+            {"linha_inicio": 4, "linha_fim": 2}, {"linha_inicio": None},
+            {"linha_inicio": 200}, {"extra": True},
+        ):
+            with self.subTest(argumentos=argumentos):
+                self.assertFalse(sessao.executar(
+                    "ler_arquivo", {"caminho": "codigo.py", **argumentos}
+                )["sucesso"])
+
+    def test_limita_listagem_e_indica_truncamento(self):
+        for i in range(4):
+            self.criar_arquivo(f"{i}.py")
+        sessao = ferramentas.FerramentasProjeto(config=Configuracao(max_arquivos=2))
+        retorno = sessao.listar()
+        self.assertEqual(len(retorno["arquivos"]), 2)
+        self.assertTrue(retorno["truncado"])
+
+    def test_limita_varredura_e_profundidade(self):
+        self.criar_arquivo("a/b/c.py")
+        retorno = ferramentas.FerramentasProjeto(config=Configuracao(max_profundidade=1)).listar()
+        self.assertTrue(retorno["truncado"])
+        self.assertEqual(retorno["arquivos"], [])
+        for i in range(4):
+            self.criar_arquivo(f"{i}.py")
+        retorno = ferramentas.FerramentasProjeto(config=Configuracao(max_itens=2)).listar()
+        self.assertTrue(retorno["truncado"])
+
+    def test_limita_contexto_sem_registrar_leitura_nao_enviada(self):
+        self.criar_arquivo("codigo.py")
+        sessao = ferramentas.FerramentasProjeto(config=Configuracao(max_contexto=10))
+        self.assertFalse(sessao.executar("ler_arquivo", {"caminho": "codigo.py"})["sucesso"])
+        self.assertTrue(sessao.limite_atingido)
+        self.assertEqual(sessao.leituras, [])
+
+    def test_permite_recuperar_leitura_grande_com_faixa_menor(self):
+        self.criar_arquivo("codigo.py", "x = 1\n" * 10)
+        sessao = ferramentas.FerramentasProjeto(config=Configuracao(max_arquivo=20))
+        self.assertFalse(sessao.executar("ler_arquivo", {"caminho": "codigo.py"})["sucesso"])
+        self.assertFalse(sessao.limite_atingido)
+        self.assertTrue(sessao.executar("ler_arquivo", {
+            "caminho": "codigo.py", "linha_inicio": 2, "linha_fim": 3,
+        })["sucesso"])
+
+    def test_ferramenta_e_argumentos_nao_permitidos(self):
+        sessao = ferramentas.FerramentasProjeto()
+        for nome, argumentos in (("executar_codigo", {}), ("listar_arquivos", []), ("listar_arquivos", {"x": 1}), ("ler_arquivo", {})):
+            with self.subTest(nome=nome, argumentos=argumentos):
+                self.assertFalse(sessao.executar(nome, argumentos)["sucesso"])
 
     def test_recusa_link_para_arquivo_fora_da_pasta(self):
         arquivo_externo = self.raiz / "fora.py"
