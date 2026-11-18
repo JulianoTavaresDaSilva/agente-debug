@@ -1,259 +1,128 @@
-import json
+"""Interface de terminal do Agente Debug."""
+
+import argparse
+from dataclasses import replace
+import os
 from pathlib import Path
+import sys
 
-from google import genai
-from ferramentas import (
-    ler_arquivo,
-    listar_arquivos,
-    DESCRICAO_LER_ARQUIVO,
-    DESCRICAO_LISTAR_ARQUIVOS,
-)
-
-MODELO = "gemini-3.6-flash"
-MAX_RODADAS = 5
+from agente import investigar, montar_pedido
+from cliente_gemini import criar_cliente, obter_chave
+from configuracao import Configuracao, ErroConfiguracao, PASTA_PROJETO, VERSAO, ler_texto
+from demonstracao import CASOS, ClienteDemonstracao, pasta_caso
+from ferramentas import DIRETORIOS_EXCLUIDOS, FerramentasProjeto
+from resultado import gerar_markdown, salvar_relatorio
 
 
-def consultar_gemini(client, **parametros):
-    try:
-        return client.interactions.create(**parametros)
-
-    except Exception as falha:
-        print("\nA consulta ao Gemini falhou.")
-        print(f"Tipo: {type(falha).__name__}")
-        print(f"Mensagem: {falha}")
-
-        resposta_http = getattr(falha, "response", None)
-
-        if resposta_http is None:
-            resposta_http = getattr(falha, "raw_response", None)
-
-        cabecalhos = getattr(falha, "headers", None)
-
-        if cabecalhos is None and resposta_http is not None:
-            cabecalhos = getattr(resposta_http, "headers", None)
-
-        if cabecalhos is not None:
-            espera = cabecalhos.get("retry-after")
-
-            if espera:
-                print(f"Retry-After informado pelo servidor: {espera}")
-            else:
-                print("O servidor não informou Retry-After.")
-
-        if resposta_http is not None:
-            try:
-                dados = resposta_http.json()
-
-                if isinstance(dados, dict):
-                    erro_api = dados.get("error", {})
-
-                    if isinstance(erro_api, dict):
-                        detalhes = erro_api.get("details")
-
-                        if detalhes:
-                            print("Detalhes adicionais:")
-                            print(json.dumps(
-                                detalhes,
-                                ensure_ascii=False,
-                                indent=2
-                            ))
-
-            except (ValueError, AttributeError):
-                pass
-
-        raise SystemExit(
-            "Investigação interrompida; nenhuma repetição automática."
-        ) from None
+def carregar_contexto(memoria=None, config=None):
+    config = config or Configuracao()
+    instrucoes = ler_texto(PASTA_PROJETO / "agent.md", config.max_manual, "o manual")
+    if not instrucoes.strip():
+        raise ErroConfiguracao("O manual agent.md está vazio.")
+    historico = ""
+    if memoria is not None:
+        memoria = Path(memoria)
+        if memoria.suffix.lower() != ".md":
+            raise ErroConfiguracao("A memória deve ser um arquivo .md.")
+        if memoria.exists():
+            historico = ler_texto(memoria, config.max_memoria, "a memória")
+        else:
+            print("Memória não encontrada; continuando sem histórico.", file=sys.stderr)
+    return instrucoes, historico
 
 
-def carregar_contexto() -> tuple[str, str]:
-    """Carrega o manual e a memória a partir da pasta do projeto."""
-    pasta_projeto = Path(__file__).resolve().parent
-
-    instrucoes = (pasta_projeto / "agent.md").read_text(
-        encoding="utf-8"
-    )
-    print("Manual agent.md carregado.")
-
-    memoria = (pasta_projeto / "memory.md").read_text(
-        encoding="utf-8"
-    )
-    print("Memória memory.md carregada.")
-
-    return instrucoes, memoria
-
-
-def receber_erro() -> str:
-    """Recebe o erro pelo terminal até encontrar uma linha com FIM."""
-    print("\nCole o erro e o contexto abaixo.")
-    print("Ao terminar, digite FIM em uma linha separada.")
-
+def receber_erro(limite=None):
+    limite = Configuracao().max_entrada if limite is None else limite
+    print("Cole o erro e o contexto. Termine com FIM em uma linha separada.", file=sys.stderr)
     linhas = []
-
+    tamanho = 0
     while True:
-        linha = input()
-
+        try:
+            linha = input()
+        except EOFError:
+            break
         if linha.strip() == "FIM":
             break
-
+        tamanho += len(linha) + bool(linhas)
+        if tamanho > limite:
+            raise ErroConfiguracao(f"O erro ultrapassa {limite} caracteres.")
         linhas.append(linha)
-
     erro = "\n".join(linhas)
-
     if not erro.strip():
-        raise SystemExit("Nenhum erro foi informado.")
-
+        raise ErroConfiguracao("Nenhum erro foi informado.")
     return erro
 
 
-def montar_pedido(erro: str, memoria: str) -> str:
-    """Monta o pedido com o erro atual e a memória como contexto histórico."""
-    return f"""
-Use a memória somente como contexto histórico.
-Ela pode conter informações desatualizadas.
-
-<memoria>
-{memoria}
-</memoria>
-
-<erro_atual>
-{erro}
-</erro_atual>
-
-Investigue o erro seguindo seu manual.
-Você dispõe das ferramentas listar_arquivos e ler_arquivo.
-Use listar_arquivos quando precisar descobrir os arquivos disponíveis.
-Os caminhos recebidos por ler_arquivo são relativos à pasta casos.
-"""
-
-
-def executar_ferramenta(nome: str, argumentos) -> dict:
-    """Valida a solicitação e retorna o resultado ou o erro da ferramenta."""
-    print(f"\nFerramenta solicitada: {nome}")
-
-    try:
-        if argumentos is None:
-            argumentos = {}
-
-        if not isinstance(argumentos, dict):
-            raise ValueError("Os argumentos devem ser um dicionário.")
-
-        if nome == "listar_arquivos":
-            if argumentos:
-                raise ValueError(
-                    "listar_arquivos não recebe argumentos."
-                )
-
-            arquivos = listar_arquivos()
-            resultado = {"sucesso": True, "arquivos": arquivos}
-            print(f"Arquivos encontrados: {arquivos}")
-
-        elif nome == "ler_arquivo":
-            if set(argumentos) != {"caminho"}:
-                raise ValueError(
-                    "Informe somente o argumento caminho."
-                )
-
-            caminho = argumentos["caminho"]
-
-            if not isinstance(caminho, str) or not caminho.strip():
-                raise ValueError(
-                    "O caminho deve ser um texto não vazio."
-                )
-
-            conteudo = ler_arquivo(caminho)
-            resultado = {"sucesso": True, "conteudo": conteudo}
-            print(f"Arquivo lido: {caminho}")
-
-        else:
-            raise ValueError("Ferramenta não permitida.")
-
-    except (OSError, ValueError, UnicodeError) as falha:
-        resultado = {"sucesso": False, "erro": str(falha)}
-        print(f"Falha na ferramenta: {falha}")
-
-    return resultado
-
-
-def investigar(client, instrucoes: str, pedido: str) -> None:
-    """Coordena as consultas ao Gemini e o ciclo de ferramentas."""
-    ferramentas = [
-        DESCRICAO_LER_ARQUIVO,
-        DESCRICAO_LISTAR_ARQUIVOS,
-    ]
-
-    print("\nConsultando o Gemini...")
-
-    resposta = consultar_gemini(
-        client,
-        model=MODELO,
-        system_instruction=instrucoes,
-        input=pedido,
-        tools=ferramentas
+def criar_parser():
+    padrao = Configuracao()
+    parser = argparse.ArgumentParser(
+        description="Investiga bugs Python com Gemini, sem executar ou alterar o código investigado."
     )
-
-    for rodada in range(1, MAX_RODADAS + 1):
-        chamadas = [
-            passo
-            for passo in (resposta.steps or [])
-            if passo.type == "function_call"
-        ]
-
-        if not chamadas:
-            print("\nAnálise:")
-            print(resposta.output_text or "Nenhuma análise textual recebida.")
-            break
-
-        if rodada == MAX_RODADAS:
-            print("\nLimite de rodadas atingido. Investigação incompleta.")
-            break
-
-        if len(chamadas) > 5:
-            print("\nQuantidade excessiva de ferramentas solicitadas.")
-            break
-
-        resultados = []
-
-        for chamada in chamadas:
-            resultado = executar_ferramenta(
-                chamada.name, chamada.arguments
-            )
-
-            resultados.append({
-                "type": "function_result",
-                "name": chamada.name,
-                "call_id": chamada.id,
-                "result": [{
-                    "type": "text",
-                    "text": json.dumps(resultado, ensure_ascii=False)
-                }]
-            })
-
-        print("\nDevolvendo os resultados ao Gemini...")
-
-        resposta = consultar_gemini(
-            client,
-            model=MODELO,
-            system_instruction=instrucoes,
-            input=resultados,
-            tools=ferramentas,
-            previous_interaction_id=resposta.id
-        )
+    parser.add_argument("--version", action="version", version=f"Agente Debug {VERSAO}")
+    parser.add_argument("--projeto", type=Path, help="Raiz autorizada; padrão: casos/ deste repositório.")
+    parser.add_argument("--erro-arquivo", type=Path, help="Erro/contexto em .txt, .log ou .md; padrão: terminal.")
+    parser.add_argument("--memoria", type=Path, help="Contexto histórico opcional em .md; ignorado por padrão.")
+    parser.add_argument("--saida", type=Path, help="Novo arquivo .md para o relatório; não sobrescreve arquivos.")
+    parser.add_argument("--modelo", default=os.environ.get("AGENTE_MODELO", padrao.modelo))
+    parser.add_argument("--max-consultas", type=int, default=padrao.max_consultas)
+    parser.add_argument("--timeout", type=float, default=padrao.timeout, help="Timeout por consulta, em segundos.")
+    parser.add_argument("--tempo-total", type=float, default=padrao.tempo_total, help="Orçamento de tempo entre consultas, em segundos.")
+    parser.add_argument("--demo", nargs="?", const="media", choices=CASOS, help="Simulação com respostas preparadas; não usa API.")
+    return parser
 
 
-def main() -> None:
-    """Prepara a investigação e garante o fechamento do cliente da API."""
-    instrucoes, memoria = carregar_contexto()
-    erro = receber_erro()
-    pedido = montar_pedido(erro, memoria)
+def validar_saida(caminho):
+    if caminho is None:
+        return
+    if caminho.suffix.lower() != ".md" or caminho.exists() or caminho.is_symlink():
+        raise ErroConfiguracao("A saída deve ser um arquivo .md novo. Escolha outro nome.")
+    if any(p.lower() in DIRETORIOS_EXCLUIDOS for p in caminho.resolve().parts):
+        raise ErroConfiguracao("O relatório não pode ser salvo em uma pasta interna excluída.")
 
-    client = genai.Client()
 
+def main(argv=None):
+    args = criar_parser().parse_args(argv)
+    cliente = None
     try:
-        investigar(client, instrucoes, pedido)
+        config = Configuracao(
+            modelo=args.modelo, max_consultas=args.max_consultas,
+            timeout=args.timeout, tempo_total=args.tempo_total,
+        )
+        validar_saida(args.saida)
+        if args.demo and (args.projeto is not None or args.erro_arquivo is not None or args.memoria is not None):
+            raise ErroConfiguracao("--demo utiliza somente os casos preparados; não combine com projeto, erro ou memória externos.")
+        raiz = pasta_caso(args.demo) / "projeto" if args.demo else args.projeto
+        ferramentas = FerramentasProjeto(raiz, config)
+        instrucoes, memoria = carregar_contexto(args.memoria, config)
+        chave = None if args.demo else obter_chave()
+        if args.demo:
+            config = replace(config, modelo="simulacao-local")
+            erro = ler_texto(pasta_caso(args.demo) / "erro.txt", config.max_entrada, "o erro")
+        elif args.erro_arquivo:
+            if args.erro_arquivo.suffix.lower() not in {".txt", ".log", ".md"} or args.erro_arquivo.name.startswith("."):
+                raise ErroConfiguracao("O erro deve estar em um arquivo .txt, .log ou .md não oculto.")
+            erro = ler_texto(args.erro_arquivo, config.max_entrada, "o erro")
+        else:
+            erro = receber_erro(config.max_entrada)
+        if not erro.strip():
+            raise ErroConfiguracao("Nenhum erro foi informado.")
+        cliente = ClienteDemonstracao(args.demo) if args.demo else criar_cliente(config, chave=chave)
+        resultado = investigar(cliente, instrucoes, montar_pedido(erro, memoria), ferramentas, config)
+        print(gerar_markdown(resultado))
+        if args.saida:
+            salvar_relatorio(args.saida, resultado)
+            print(f"Relatório salvo em {args.saida}", file=sys.stderr)
+        return {"analise_produzida": 0, "informacao_insuficiente": 3, "parcial": 4, "falha": 1}[resultado.estado]
+    except KeyboardInterrupt:
+        print("\nInvestigação cancelada pelo usuário.", file=sys.stderr)
+        return 130
+    except (ErroConfiguracao, OSError, ValueError, UnicodeError) as falha:
+        print(f"Erro: {falha}", file=sys.stderr)
+        return 2
     finally:
-        client.close()
+        if cliente is not None:
+            cliente.close()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

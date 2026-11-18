@@ -1,335 +1,160 @@
-"""Verifica o fluxo do agente com respostas simuladas do Gemini."""
+"""Testes da interface e da inicialização, sem API real."""
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 import importlib.util
 import io
-import json
+import os
 from pathlib import Path
-from types import SimpleNamespace
-import unittest
+import subprocess
+import sys
 from unittest.mock import Mock, patch
 
-from google import genai
-
-# Mesmo uma regressão na importação não pode solicitar entrada ou criar a API.
-with patch.object(
-    genai, "Client", side_effect=AssertionError("API criada na importação.")
-), patch(
-    "builtins.input", side_effect=AssertionError("Entrada pedida na importação.")
-):
-    import main as agente
+import main
+from configuracao import Configuracao, ErroConfiguracao
+from tests.apoio import CasoTemporario, diagnostico, resposta
+import json
 
 
-def criar_chamada(nome, argumentos, identificador="chamada-1"):
-    return SimpleNamespace(
-        type="function_call", name=nome, arguments=argumentos, id=identificador
-    )
-
-
-def criar_resposta(passos=(), texto="Análise simulada.", identificador="resposta-1"):
-    return SimpleNamespace(
-        steps=list(passos), output_text=texto, id=identificador
-    )
-
-
-class TestMain(unittest.TestCase):
+class TestMain(CasoTemporario):
     def setUp(self):
-        self.saida = io.StringIO()
-        stdout = patch("sys.stdout", self.saida)
-        stdout.start()
-        self.addCleanup(stdout.stop)
-
-        rede = patch(
-            "socket.socket.connect",
-            side_effect=AssertionError("Teste tentou abrir uma conexão de rede."),
-        )
+        super().setUp()
+        rede = patch("socket.socket.connect", side_effect=AssertionError("Rede não permitida nos testes."))
         rede.start()
         self.addCleanup(rede.stop)
+        self.stdout = io.StringIO()
+        self.stderr = io.StringIO()
 
-        self.cliente = Mock()
-        construtor = patch.object(genai, "Client", return_value=self.cliente)
-        self.construtor = construtor.start()
-        self.addCleanup(construtor.stop)
+    def executar(self, argumentos):
+        with redirect_stdout(self.stdout), redirect_stderr(self.stderr):
+            return main.main(argumentos)
 
-    def investigar(self, respostas):
-        self.cliente.interactions.create.side_effect = respostas
-        agente.investigar(self.cliente, "Manual fictício", "Pedido fictício")
-
-    def executar_main(self):
-        with patch.object(
-            agente, "carregar_contexto",
-            return_value=("Manual fictício", "Memória fictícia"),
-        ), patch("builtins.input", side_effect=["Erro de teste", "FIM"]):
-            agente.main()
-
-    def test_importacao_nao_inicia_terminal_nem_cliente(self):
-        spec = importlib.util.spec_from_file_location(
-            "agente_sem_execucao", agente.__file__
-        )
+    def test_importacao_nao_le_arquivos_nem_inicia_cliente(self):
+        spec = importlib.util.spec_from_file_location("modulo_sem_execucao", main.__file__)
         modulo = importlib.util.module_from_spec(spec)
-        saida_importacao = io.StringIO()
-
-        with patch(
-            "builtins.input", side_effect=AssertionError("Entrada na importação.")
-        ) as entrada, patch.object(
+        with patch("builtins.input", side_effect=AssertionError("Entrada na importação.")), patch.object(
             Path, "read_text", side_effect=AssertionError("Leitura na importação.")
-        ) as leitura, redirect_stdout(saida_importacao):
+        ), patch.object(main, "criar_cliente", side_effect=AssertionError("API na importação.")):
             spec.loader.exec_module(modulo)
+        self.assertTrue(callable(modulo.main))
 
-        self.assertEqual(saida_importacao.getvalue(), "")
-        self.construtor.assert_not_called()
+    def test_recebe_multiplas_linhas_e_eof(self):
+        for linhas in (["a", "", "b", " FIM "], ["a", "", "b", EOFError()]):
+            with self.subTest(linhas=linhas), patch("builtins.input", side_effect=linhas), redirect_stderr(self.stderr):
+                self.assertEqual(main.receber_erro(), "a\n\nb")
+
+    def test_valida_entrada_vazia_e_limite(self):
+        for linhas, limite in ((["FIM"], 10), ([" ", "FIM"], 10), (["abc", "FIM"], 2)):
+            with self.subTest(linhas=linhas), patch("builtins.input", side_effect=linhas), redirect_stderr(self.stderr):
+                with self.assertRaises(ErroConfiguracao):
+                    main.receber_erro(limite)
+        with patch("builtins.input", side_effect=["abc", "FIM"]), redirect_stderr(self.stderr):
+            self.assertEqual(main.receber_erro(3), "abc")
+
+    def test_memoria_nao_e_lida_por_padrao(self):
+        self.arquivo("agent.md", "Manual genérico.")
+        self.arquivo("memory.md", "HISTORICO QUE NAO DEVE SER ENVIADO")
+        with patch.object(main, "PASTA_PROJETO", self.raiz):
+            self.assertEqual(main.carregar_contexto(), ("Manual genérico.", ""))
+
+    def test_memoria_opcional_ausente_e_explicita(self):
+        self.arquivo("agent.md", "Manual.")
+        memoria = self.arquivo("contexto.md", "Contexto.")
+        with patch.object(main, "PASTA_PROJETO", self.raiz), redirect_stderr(self.stderr):
+            self.assertEqual(main.carregar_contexto(memoria), ("Manual.", "Contexto."))
+            self.assertEqual(main.carregar_contexto(self.raiz / "ausente.md"), ("Manual.", ""))
+        self.assertIn("continuando sem histórico", self.stderr.getvalue())
+
+    def test_manual_obrigatorio_e_arquivos_limitados(self):
+        with patch.object(main, "PASTA_PROJETO", self.raiz):
+            with self.assertRaises(ErroConfiguracao):
+                main.carregar_contexto()
+            self.arquivo("agent.md", " ")
+            with self.assertRaises(ErroConfiguracao):
+                main.carregar_contexto()
+            self.arquivo("agent.md", "manual extenso")
+            with self.assertRaises(ErroConfiguracao):
+                main.carregar_contexto(config=Configuracao(max_manual=2))
+
+    def test_falta_de_chave_encerra_antes_da_entrada(self):
+        with patch.dict(os.environ, {}, clear=True), patch("builtins.input") as entrada:
+            codigo = self.executar(["--projeto", str(self.raiz)])
+        self.assertEqual(codigo, 2)
+        self.assertIn("GEMINI_API_KEY", self.stderr.getvalue())
         entrada.assert_not_called()
-        leitura.assert_not_called()
 
-    def test_recebe_multiplas_linhas_ate_fim(self):
-        with patch(
-            "builtins.input", side_effect=["linha 1", "", "linha 2", " FIM "]
-        ):
-            self.assertEqual(agente.receber_erro(), "linha 1\n\nlinha 2")
+    def test_demo_nao_cria_cliente_real_e_exporta_relatorio(self):
+        destino = self.raiz / "relatorios" / "demo.md"
+        with patch.object(main, "criar_cliente", side_effect=AssertionError("API real.")), patch.dict(os.environ, {}, clear=True):
+            codigo = self.executar(["--demo", "media", "--saida", str(destino)])
+        self.assertEqual(codigo, 0)
+        self.assertIn("SIMULAÇÃO LOCAL", destino.read_text(encoding="utf-8"))
+        self.assertIn("calculadora.py:1-2", self.stdout.getvalue())
 
-    def test_recusa_entrada_vazia(self):
-        for linhas in (["FIM"], ["   ", "FIM"]):
-            with self.subTest(linhas=linhas):
-                with patch("builtins.input", side_effect=linhas):
-                    with self.assertRaises(SystemExit):
-                        agente.receber_erro()
+    def test_todos_os_casos_de_demo(self):
+        for nome, esperado in (("media", 0), ("tipos", 0), ("multiarquivo", 0), ("insuficiente", 3)):
+            with self.subTest(caso=nome), patch.object(main, "criar_cliente", side_effect=AssertionError("API real.")):
+                self.assertEqual(self.executar(["--demo", nome]), esperado)
 
-        self.construtor.assert_not_called()
-
-    def test_executa_listagem_sem_argumentos(self):
-        with patch.object(
-            agente, "listar_arquivos", return_value=["exemplo.py"]
-        ) as listar:
-            for argumentos in ({}, None):
-                with self.subTest(argumentos=argumentos):
-                    self.assertEqual(
-                        agente.executar_ferramenta("listar_arquivos", argumentos),
-                        {"sucesso": True, "arquivos": ["exemplo.py"]},
-                    )
-
-        self.assertEqual(listar.call_count, 2)
-
-    def test_executa_leitura_com_caminho(self):
-        with patch.object(
-            agente, "ler_arquivo", return_value="valor = 42\n"
-        ) as ler:
-            resultado = agente.executar_ferramenta(
-                "ler_arquivo", {"caminho": "exemplo.py"}
-            )
-
-        ler.assert_called_once_with("exemplo.py")
-        self.assertEqual(
-            resultado, {"sucesso": True, "conteudo": "valor = 42\n"}
-        )
-
-    def test_recusa_solicitacoes_invalidas_antes_de_executar(self):
-        solicitacoes = [
-            ("listar_arquivos", {"extra": True}),
-            ("ler_arquivo", None),
-            ("ler_arquivo", []),
-            ("ler_arquivo", "exemplo.py"),
-            ("ler_arquivo", {}),
-            ("ler_arquivo", {"caminho": 1}),
-            ("ler_arquivo", {"caminho": "  "}),
-            ("ler_arquivo", {"caminho": "exemplo.py", "extra": True}),
-            ("executar_comando", {}),
-        ]
-        with patch.object(agente, "ler_arquivo") as ler, patch.object(
-            agente, "listar_arquivos"
-        ) as listar:
-            for nome, argumentos in solicitacoes:
-                with self.subTest(nome=nome, argumentos=argumentos):
-                    resultado = agente.executar_ferramenta(nome, argumentos)
-                    self.assertFalse(resultado["sucesso"])
-                    self.assertTrue(resultado["erro"])
-
-        ler.assert_not_called()
-        listar.assert_not_called()
-
-    def test_converte_falha_da_ferramenta_em_resultado(self):
-        for falha in (
-            FileNotFoundError("Arquivo ausente."),
-            ValueError("Caminho não autorizado."),
-            UnicodeError("Codificação inválida."),
-        ):
-            with self.subTest(falha=type(falha).__name__):
-                with patch.object(agente, "ler_arquivo", side_effect=falha):
-                    resultado = agente.executar_ferramenta(
-                        "ler_arquivo", {"caminho": "exemplo.py"}
-                    )
-                self.assertEqual(
-                    resultado, {"sucesso": False, "erro": str(falha)}
+    def test_executavel_em_outro_diretorio_e_ambiente_sem_chave(self):
+        ambiente = {k: v for k, v in os.environ.items() if k not in {"GOOGLE_API_KEY", "GEMINI_API_KEY"}}
+        ambiente["PYTHONIOENCODING"] = "utf-8"
+        for nome, esperado in (("media", 0), ("tipos", 0), ("multiarquivo", 0), ("insuficiente", 3)):
+            with self.subTest(caso=nome):
+                processo = subprocess.run(
+                    [sys.executable, str(Path(main.__file__).resolve()), "--demo", nome],
+                    cwd=self.raiz, env=ambiente, capture_output=True,
+                    encoding="utf-8", timeout=20,
                 )
+                self.assertEqual(processo.returncode, esperado, processo.stderr)
+                self.assertIn("SIMULAÇÃO LOCAL", processo.stdout)
 
-    def test_resposta_textual_encerra_sem_executar_ferramenta(self):
-        with patch.object(agente, "executar_ferramenta") as executar:
-            self.investigar([criar_resposta(texto="Diagnóstico final.")])
+    def test_demo_recusa_projeto_externo(self):
+        self.assertEqual(self.executar(["--demo", "--projeto", str(self.raiz)]), 2)
 
-        executar.assert_not_called()
-        self.cliente.interactions.create.assert_called_once()
-        self.assertIn("Diagnóstico final.", self.saida.getvalue())
+    def test_saida_existente_e_extensao_invalida_sao_recusadas(self):
+        destino = self.arquivo("existente.md", "Preservar")
+        for path in (destino, self.raiz / "codigo.py", self.raiz / ".git" / "relatorio.md"):
+            with self.subTest(path=path):
+                self.assertEqual(self.executar(["--demo", "--saida", str(path)]), 2)
+        self.assertEqual(destino.read_text(encoding="utf-8"), "Preservar")
 
-    def test_informa_resposta_sem_texto(self):
-        self.investigar([criar_resposta(texto=None)])
+    def test_configuracoes_invalidas(self):
+        for valor in ("0", "-1", "nan", "inf"):
+            with self.subTest(valor=valor):
+                self.assertEqual(self.executar(["--demo", "--timeout", valor]), 2)
+        for valor in ("0", "-1"):
+            self.assertEqual(self.executar(["--demo", "--max-consultas", valor]), 2)
 
-        self.assertIn("Nenhuma análise textual recebida.", self.saida.getvalue())
-
-    def test_devolve_resultados_em_lote_e_preserva_historico(self):
-        primeira = criar_resposta(
-            [criar_chamada("listar_arquivos", {}, "listar-1")],
-            identificador="resposta-inicial",
-        )
-        segunda = criar_resposta(
-            [
-                SimpleNamespace(type="thought"),
-                criar_chamada("ler_arquivo", {"caminho": "a.py"}, "ler-a"),
-                criar_chamada("ler_arquivo", {"caminho": "b.py"}, "ler-b"),
-            ],
-            identificador="resposta-leituras",
-        )
-        with patch.object(
-            agente, "listar_arquivos", return_value=["a.py", "b.py"]
-        ), patch.object(
-            agente, "ler_arquivo", side_effect=["valor = 1", "valor = 2"]
+    def test_erro_por_arquivo_e_fechamento_do_cliente(self):
+        erro = self.arquivo("erro.txt", "Erro de teste.")
+        cliente = Mock()
+        cliente.interactions.create.return_value = resposta(texto=json.dumps(diagnostico("informacao_insuficiente")))
+        with patch.object(main, "obter_chave", return_value="chave-ficticia"), patch.object(
+            main, "criar_cliente", return_value=cliente
         ):
-            self.investigar([primeira, segunda, criar_resposta()])
+            codigo = self.executar(["--projeto", str(self.raiz), "--erro-arquivo", str(erro)])
+        self.assertEqual(codigo, 3)
+        cliente.close.assert_called_once()
+        self.assertIn("Erro de teste.", cliente.interactions.create.call_args.kwargs["input"])
 
-        consultas = self.cliente.interactions.create.call_args_list
-        self.assertEqual(len(consultas), 3)
-        self.assertEqual(
-            consultas[1].kwargs["previous_interaction_id"], "resposta-inicial"
-        )
-        self.assertEqual(
-            consultas[2].kwargs["previous_interaction_id"], "resposta-leituras"
-        )
-        self.assertEqual(consultas[0].kwargs["input"], "Pedido fictício")
-        for consulta in consultas:
-            self.assertEqual(consulta.kwargs["system_instruction"], "Manual fictício")
-            self.assertEqual(
-                {f["name"] for f in consulta.kwargs["tools"]},
-                {"listar_arquivos", "ler_arquivo"},
-            )
+    def test_falha_api_fecha_cliente(self):
+        erro = self.arquivo("erro.txt", "Erro.")
+        cliente = Mock()
+        cliente.interactions.create.side_effect = RuntimeError("NAO MOSTRAR ESTE SEGREDO")
+        with patch.object(main, "obter_chave", return_value="ficticia"), patch.object(main, "criar_cliente", return_value=cliente):
+            self.assertEqual(self.executar(["--projeto", str(self.raiz), "--erro-arquivo", str(erro)]), 1)
+        cliente.close.assert_called_once()
+        self.assertNotIn("NAO MOSTRAR", self.stdout.getvalue())
 
-        listagem = consultas[1].kwargs["input"][0]
-        self.assertEqual(listagem["type"], "function_result")
-        self.assertEqual(listagem["name"], "listar_arquivos")
-        self.assertEqual(listagem["call_id"], "listar-1")
-        self.assertEqual(
-            json.loads(listagem["result"][0]["text"]),
-            {"sucesso": True, "arquivos": ["a.py", "b.py"]},
-        )
-        leituras = consultas[2].kwargs["input"]
-        self.assertEqual([r["call_id"] for r in leituras], ["ler-a", "ler-b"])
-        self.assertEqual(
-            [json.loads(r["result"][0]["text"])["conteudo"] for r in leituras],
-            ["valor = 1", "valor = 2"],
-        )
+    def test_cancelamento_e_erro_vazio(self):
+        with patch.object(main, "obter_chave", return_value="ficticia"), patch("builtins.input", side_effect=KeyboardInterrupt()):
+            self.assertEqual(self.executar(["--projeto", str(self.raiz)]), 130)
+        erro = self.arquivo("erro.txt", " ")
+        with patch.object(main, "obter_chave", return_value="ficticia"):
+            self.assertEqual(self.executar(["--projeto", str(self.raiz), "--erro-arquivo", str(erro)]), 2)
 
-    def test_devolve_erro_de_ferramenta_ao_modelo(self):
-        with patch.object(
-            agente, "ler_arquivo", side_effect=FileNotFoundError("Arquivo ausente.")
-        ):
-            self.investigar([
-                criar_resposta([
-                    criar_chamada("ler_arquivo", {"caminho": "ausente.py"})
-                ]),
-                criar_resposta(),
-            ])
-
-        resultado = self.cliente.interactions.create.call_args.kwargs["input"][0]
-        self.assertEqual(
-            json.loads(resultado["result"][0]["text"]),
-            {"sucesso": False, "erro": "Arquivo ausente."},
-        )
-
-    def test_recusa_lote_com_mais_de_cinco_ferramentas(self):
-        chamadas = [
-            criar_chamada("listar_arquivos", {}, str(i)) for i in range(6)
-        ]
-        with patch.object(agente, "executar_ferramenta") as executar:
-            self.investigar([criar_resposta(chamadas)])
-
-        executar.assert_not_called()
-        self.cliente.interactions.create.assert_called_once()
-        self.assertIn("Quantidade excessiva", self.saida.getvalue())
-
-    def test_aceita_lote_com_cinco_ferramentas(self):
-        chamadas = [
-            criar_chamada("listar_arquivos", {}, str(i)) for i in range(5)
-        ]
-        with patch.object(agente, "listar_arquivos", return_value=[]) as listar:
-            self.investigar([criar_resposta(chamadas), criar_resposta()])
-
-        self.assertEqual(listar.call_count, 5)
-        self.assertEqual(self.cliente.interactions.create.call_count, 2)
-
-    def test_respeita_limite_de_consultas_e_ferramentas(self):
-        respostas = [
-            criar_resposta(
-                [criar_chamada("listar_arquivos", {}, str(i)) for i in range(5)],
-                identificador=f"rodada-{rodada}",
-            )
-            for rodada in range(agente.MAX_RODADAS)
-        ]
-        with patch.object(agente, "listar_arquivos", return_value=[]) as listar:
-            self.investigar(respostas)
-
-        self.assertEqual(
-            self.cliente.interactions.create.call_count, agente.MAX_RODADAS
-        )
-        self.assertEqual(listar.call_count, (agente.MAX_RODADAS - 1) * 5)
-        self.assertIn("Investigação incompleta.", self.saida.getvalue())
-
-    def test_aceita_conclusao_na_ultima_consulta(self):
-        respostas = [
-            criar_resposta([criar_chamada("listar_arquivos", {})])
-            for _ in range(agente.MAX_RODADAS - 1)
-        ]
-        respostas.append(criar_resposta(texto="Conclusão no limite."))
-        with patch.object(agente, "listar_arquivos", return_value=[]):
-            self.investigar(respostas)
-
-        self.assertIn("Conclusão no limite.", self.saida.getvalue())
-        self.assertNotIn("Investigação incompleta.", self.saida.getvalue())
-
-    def test_main_envia_contexto_e_fecha_cliente(self):
-        self.cliente.interactions.create.return_value = criar_resposta()
-
-        self.executar_main()
-
-        parametros = self.cliente.interactions.create.call_args.kwargs
-        self.assertEqual(parametros["system_instruction"], "Manual fictício")
-        self.assertIn("<memoria>\nMemória fictícia\n</memoria>", parametros["input"])
-        self.assertIn("<erro_atual>\nErro de teste\n</erro_atual>", parametros["input"])
-        self.cliente.close.assert_called_once_with()
-
-    def test_main_fecha_cliente_quando_a_api_falha(self):
-        self.cliente.interactions.create.side_effect = RuntimeError("Falha simulada.")
-
-        with self.assertRaises(SystemExit):
-            self.executar_main()
-
-        self.cliente.close.assert_called_once_with()
-        self.cliente.interactions.create.assert_called_once()
-        self.assertIn("A consulta ao Gemini falhou.", self.saida.getvalue())
-
-    def test_main_fecha_cliente_quando_a_continuacao_falha(self):
-        self.cliente.interactions.create.side_effect = [
-            criar_resposta([criar_chamada("listar_arquivos", {})]),
-            RuntimeError("Falha na continuação."),
-        ]
-        with patch.object(agente, "listar_arquivos", return_value=[]):
-            with self.assertRaises(SystemExit):
-                self.executar_main()
-
-        self.cliente.close.assert_called_once_with()
-        self.assertEqual(self.cliente.interactions.create.call_count, 2)
-
-    def test_main_nao_cria_cliente_quando_a_entrada_e_vazia(self):
-        with patch.object(
-            agente, "carregar_contexto", return_value=("Manual", "Memória")
-        ), patch("builtins.input", return_value="FIM"):
-            with self.assertRaises(SystemExit):
-                agente.main()
-
-        self.construtor.assert_not_called()
+    def test_recusa_pasta_inexistente_e_arquivo_de_credenciais_como_erro(self):
+        self.assertEqual(self.executar(["--projeto", str(self.raiz / "ausente")]), 2)
+        chave = self.arquivo(".env", "NAO LER")
+        with patch.object(main, "obter_chave", return_value="ficticia"):
+            self.assertEqual(self.executar(["--projeto", str(self.raiz), "--erro-arquivo", str(chave)]), 2)

@@ -186,23 +186,17 @@ def listar_arquivos() -> list[str]:
 
 
 DESCRICAO_LER_ARQUIVO = {
-    "type": "function",
-    "name": "ler_arquivo",
-    "description": (
-        "Lê um arquivo Python da pasta autorizada casos. "
-        "Recebe o caminho relativo a essa pasta, como calculadora.py. "
-        "Não executa o código."
-    ),
+    "type": "function", "name": "ler_arquivo",
+    "description": "Lê código Python na raiz autorizada e devolve caminho e linhas numeradas. Não executa o código.",
     "parameters": {
-        "type": "object",
+        "type": "object", "additionalProperties": False,
         "properties": {
-            "caminho": {
-                "type": "string",
-                "description": "Caminho relativo à pasta casos."
-            }
+            "caminho": {"type": "string", "description": "Caminho relativo à raiz autorizada."},
+            "linha_inicio": {"type": "integer", "minimum": 1},
+            "linha_fim": {"type": "integer", "minimum": 1},
         },
-        "required": ["caminho"]
-    }
+        "required": ["caminho"],
+    },
 }
 DESCRICAO_LISTAR_ARQUIVOS = {
     "type": "function", "name": "listar_arquivos",
