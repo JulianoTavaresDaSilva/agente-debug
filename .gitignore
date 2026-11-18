@@ -5,3 +5,9 @@ __pycache__/
 .env
 .env.*
 !.env.example
+
+memory.local.md
+relatorios/
+tests/_arquivos_*/
+tests/_cli_*/
+.venv-validacao/

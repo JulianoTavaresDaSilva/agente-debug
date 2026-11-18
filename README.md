@@ -84,12 +84,12 @@ O bloco `if __name__ == "__main__":` chama `main()` quando o arquivo é executad
 
 ## Requisitos
 
-- Python 3.10 ou superior.
+- Python 3.11 ou superior.
 - Acesso à internet.
 - Chave da API do Gemini e acesso ao modelo configurado.
 - Biblioteca `google-genai`.
 
-O ambiente usado no desenvolvimento tem Python 3.15 e `google-genai` 2.31.0. Os comandos abaixo usam essa versão da biblioteca.
+O ambiente usado no desenvolvimento tem Python 3.15 e `google-genai` 3.3.0. Os comandos abaixo usam essa versão da biblioteca.
 
 ## Instalação e execução
 
@@ -104,7 +104,7 @@ python -m venv .venv
 ### 2. Instalar a dependência
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install "google-genai==2.31.0"
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 Os comandos usam diretamente o Python da `.venv`, sem precisar ativar o ambiente virtual.
