@@ -1,0 +1,23 @@
+{
+  "descricao": "SIMULAÇÃO: respostas preparadas, não geradas pelo Gemini.",
+  "chamadas": [
+    [
+      {
+        "nome": "listar_arquivos",
+        "argumentos": {}
+      }
+    ]
+  ],
+  "diagnostico": {
+    "estado": "informacao_insuficiente",
+    "problema": "Foi relatada uma falha de API sem erro ou código disponível.",
+    "causa_provavel": "",
+    "correcao_sugerida": "",
+    "verificacao": [],
+    "pendencias": [
+      "Fornecer o traceback completo e o comportamento esperado.",
+      "Disponibilizar o código Python relacionado dentro da pasta autorizada."
+    ],
+    "evidencias": []
+  }
+}

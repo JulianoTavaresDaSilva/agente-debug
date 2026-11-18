@@ -1,0 +1,2 @@
+Ao finalizar um pedido de 100 com desconto de 10%, recebo -900 em vez de 90.
+A chamada está em app.py e o cálculo fica no módulo dominio/descontos.py.

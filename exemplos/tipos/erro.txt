@@ -1,0 +1,2 @@
+adicionar_taxa(100.0, "10") levanta TypeError: unsupported operand type(s) for +: 'float' and 'str'.
+A taxa vem de um formulário como texto numérico. Esperado: total 110.0.

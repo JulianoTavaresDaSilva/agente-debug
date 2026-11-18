@@ -1,0 +1,3 @@
+calcular_media([]) levanta ZeroDivisionError: division by zero.
+Esperado: rejeitar a lista vazia com ValueError e uma mensagem clara.
+O código está em calculadora.py.

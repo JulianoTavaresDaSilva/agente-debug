@@ -1,0 +1,1 @@
+Minha API falhou ontem. Não tenho o traceback, o código nem detalhes do comportamento esperado.

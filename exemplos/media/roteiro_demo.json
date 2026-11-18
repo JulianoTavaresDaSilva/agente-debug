@@ -1,0 +1,40 @@
+{
+  "descricao": "SIMULAÇÃO: respostas preparadas, não geradas pelo Gemini.",
+  "chamadas": [
+    [
+      {
+        "nome": "listar_arquivos",
+        "argumentos": {}
+      }
+    ],
+    [
+      {
+        "nome": "ler_arquivo",
+        "argumentos": {
+          "caminho": "calculadora.py"
+        }
+      }
+    ]
+  ],
+  "diagnostico": {
+    "estado": "analise_produzida",
+    "problema": "Calcular a média de uma lista vazia causa divisão por zero.",
+    "causa_provavel": "O denominador len(valores) é zero quando a lista está vazia.",
+    "correcao_sugerida": "Antes da divisão, rejeite a lista vazia com ValueError e uma mensagem clara.",
+    "verificacao": [
+      "Verifique que [2, 4, 6] produz 4.",
+      "Verifique que [] levanta ValueError após a correção."
+    ],
+    "pendencias": [
+      "Aplicar a correção e executar os testes no projeto investigado."
+    ],
+    "evidencias": [
+      {
+        "caminho": "calculadora.py",
+        "linha_inicio": 1,
+        "linha_fim": 2,
+        "observacao": "A função divide pela quantidade de elementos sem tratar uma lista vazia."
+      }
+    ]
+  }
+}

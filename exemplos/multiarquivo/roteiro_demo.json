@@ -1,0 +1,52 @@
+{
+  "descricao": "SIMULAÇÃO: respostas preparadas, não geradas pelo Gemini.",
+  "chamadas": [
+    [
+      {
+        "nome": "listar_arquivos",
+        "argumentos": {}
+      }
+    ],
+    [
+      {
+        "nome": "ler_arquivo",
+        "argumentos": {
+          "caminho": "app.py"
+        }
+      },
+      {
+        "nome": "ler_arquivo",
+        "argumentos": {
+          "caminho": "dominio/descontos.py"
+        }
+      }
+    ]
+  ],
+  "diagnostico": {
+    "estado": "analise_produzida",
+    "problema": "Um desconto de 10% sobre 100 produz -900.",
+    "causa_provavel": "O chamador fornece percentual em escala de 0 a 100, mas o cálculo o usa como fração.",
+    "correcao_sugerida": "Divida o percentual por 100 na fórmula: preco * (1 - percentual / 100).",
+    "verificacao": [
+      "Verifique que (100, 10) produz 90.",
+      "Confira os limites: desconto 0 produz o preço integral e 100 produz zero."
+    ],
+    "pendencias": [
+      "Aplicar e testar a correção."
+    ],
+    "evidencias": [
+      {
+        "caminho": "app.py",
+        "linha_inicio": 4,
+        "linha_fim": 5,
+        "observacao": "O chamador passa 100 como preço e 10 como percentual."
+      },
+      {
+        "caminho": "dominio/descontos.py",
+        "linha_inicio": 1,
+        "linha_fim": 2,
+        "observacao": "A fórmula subtrai 10 diretamente de 1, produzindo um fator negativo."
+      }
+    ]
+  }
+}
