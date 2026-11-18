@@ -1,218 +1,211 @@
 # Agente Debug
 
-Agente de investigação de bugs desenvolvido em Python, com interface pelo terminal e integração com o Gemini. Recebe mensagens de erro, stack traces e contexto do usuário, consulta arquivos Python de uma pasta autorizada e produz uma análise com possíveis causas, sugestões de correção e formas de verificar o resultado.
+Agente de terminal para investigar bugs em projetos Python usando o Gemini. Recebe um erro, consulta arquivos de uma pasta autorizada e produz um diagnóstico com referências a linhas, correção sugerida e passos de verificação.
 
-O projeto foi criado para aprender a construir um agente com código próprio, explorando instruções de sistema, contexto histórico e chamadas de ferramentas (*function calling*).
+O projeto explora chamadas de ferramentas (*function calling*), orçamento de investigação, validação de evidências e testes de integração com HTTP simulado, usando Python e o SDK oficial do Google.
+
+**Versão técnica: 0.1.0.** A implementação e as demonstrações offline são testadas localmente. A avaliação de diagnósticos com a API real e a primeira execução do CI no GitHub ainda precisam ser registradas em [Avaliação do MVP](docs/AVALIACAO.md).
+
+## Experimente sem chave de API
+
+Depois de instalar as dependências:
+
+~~~powershell
+python main.py --demo media
+~~~
+
+O programa consulta os arquivos do exemplo e gera um relatório com respostas previamente preparadas. A saída é marcada como **SIMULAÇÃO LOCAL**: esse modo não utiliza um modelo local nem chama o Gemini.
+
+Outros casos:
+
+~~~powershell
+python main.py --demo tipos
+python main.py --demo multiarquivo
+python main.py --demo insuficiente
+~~~
+
+O último caso reconhece informação insuficiente e retorna código de saída 3. Veja um [relatório de demonstração](docs/DEMONSTRACAO.md) e os [critérios de avaliação](docs/AVALIACAO.md).
 
 ## Funcionalidades
 
-- Entrada de erros e contexto com várias linhas pelo terminal.
-- Manual de investigação separado do código, em `agent.md`.
-- Leitura de contexto histórico a partir de `memory.md`.
-- Listagem e leitura de arquivos Python na pasta autorizada `casos/`.
-- Validação dos nomes das ferramentas, argumentos, caminhos e tamanho dos arquivos.
-- Continuidade da investigação entre consultas ao modelo.
-- Limites de consultas e de ferramentas por resposta.
-- Exibição de falhas da API e de informações de diagnóstico quando disponíveis.
+- Entrada interativa com várias linhas ou leitura do erro por arquivo.
+- Seleção da pasta autorizada com --projeto.
+- Descoberta de arquivos Python em subpastas, excluindo diretórios internos e ocultos.
+- Leitura integral ou por faixa, com caminho e linhas numeradas.
+- Validação das referências do diagnóstico contra os trechos efetivamente consultados.
+- Memória histórica opcional, selecionada explicitamente.
+- Limites de consultas, ferramentas, tempo e volume de contexto.
+- Uma tentativa HTTP por consulta, sem repetição ou continuação automáticas do SDK.
+- Resultado explícito: análise produzida, informação insuficiente, parcial ou falha.
+- Relatório Markdown com criação exclusiva: um arquivo existente nunca é sobrescrito.
+- Casos de exemplo, testes locais e workflow de CI para Windows e Linux.
 
-O agente sugere correções. A aplicação das mudanças e a execução dos testes ficam a cargo de quem está investigando o problema.
+O agente sugere mudanças. Ele não edita nem executa o projeto investigado e não declara que verificou uma correção.
 
-## Como funciona
+## Instalação
 
-```mermaid
-flowchart TD
-    A[Erro informado no terminal] --> B[Programa Python]
-    C[agent.md: manual] --> B
-    D[memory.md: contexto histórico] --> B
-    B --> E[Gemini]
-    E --> F{Solicitou ferramentas?}
-    F -- Sim --> G[Python valida e consulta arquivos em casos/]
-    G --> H[Resultados das ferramentas]
-    H --> E
-    F -- Não --> I[Análise exibida no terminal]
-```
+Requisitos: **Python 3.11 ou superior** e acesso à internet para instalar as dependências. A execução real também exige chave do Gemini e acesso ao modelo escolhido.
 
-1. O programa carrega o manual e a memória e recebe o erro informado pelo usuário.
-2. Envia o manual como instrução de sistema e a memória como contexto histórico junto com o erro atual.
-3. O Gemini pode responder diretamente ou solicitar uma das ferramentas disponíveis.
-4. O Python valida a solicitação, executa a ferramenta e devolve seu resultado ao modelo.
-5. O ciclo continua até uma resposta sem novas chamadas de ferramentas ou até um limite de execução.
+Na raiz do repositório, usando PowerShell:
 
-O modelo solicita as consultas; as funções Python controlam o acesso aos arquivos. O parâmetro `previous_interaction_id` mantém a continuidade entre as consultas de uma mesma investigação.
-
-## Estrutura do projeto
-
-```text
-agente-debug/
-├── casos/
-│   └── calculadora.py   # Exemplo com bug intencional
-├── tests/
-│   ├── __init__.py
-│   ├── test_ferramentas.py  # Arquivos e limites de acesso
-│   └── test_main.py         # Fluxo com respostas simuladas
-├── .gitignore          # Arquivos locais ignorados pelo Git
-├── agent.md            # Manual e regras de investigação
-├── ferramentas.py      # Ferramentas e suas descrições para o modelo
-├── main.py             # Entrada, integração com Gemini e ciclo do agente
-├── memory.md           # Contexto histórico carregado na inicialização
-└── README.md
-```
-
-| Componente | Responsabilidade |
-| --- | --- |
-| [main.py](main.py) | Receber a entrada, montar o contexto, consultar a API e coordenar as ferramentas. |
-| [ferramentas.py](ferramentas.py) | Implementar as consultas aos arquivos e as validações de acesso. |
-| [agent.md](agent.md) | Orientar a investigação, a comunicação dos resultados e o tratamento de evidências. |
-| [memory.md](memory.md) | Fornecer histórico e decisões anteriores como contexto, sujeito a informações desatualizadas. |
-| [casos/calculadora.py](casos/calculadora.py) | Disponibilizar um caso pequeno para experimentar a investigação. |
-
-### Organização de `main.py`
-
-O programa está dividido em funções com responsabilidades definidas:
-
-| Função | Responsabilidade |
-| --- | --- |
-| `carregar_contexto()` | Ler o manual e a memória da pasta do projeto. |
-| `receber_erro()` | Receber a entrada até `FIM` e recusar conteúdo vazio. |
-| `montar_pedido()` | Combinar o erro atual com a memória histórica. |
-| `consultar_gemini()` | Consultar a API e apresentar informações de falha. |
-| `executar_ferramenta()` | Validar a solicitação e retornar o resultado ou o erro da ferramenta. |
-| `investigar()` | Coordenar as consultas ao modelo, as ferramentas e os limites. |
-| `main()` | Iniciar o fluxo e garantir o fechamento do cliente da API. |
-
-O bloco `if __name__ == "__main__":` chama `main()` quando o arquivo é executado diretamente. Importar o módulo permite acessar suas funções sem iniciar a entrada pelo terminal nem criar o cliente da API.
-
-## Requisitos
-
-- Python 3.11 ou superior.
-- Acesso à internet.
-- Chave da API do Gemini e acesso ao modelo configurado.
-- Biblioteca `google-genai`.
-
-O ambiente usado no desenvolvimento tem Python 3.15 e `google-genai` 3.3.0. Os comandos abaixo usam essa versão da biblioteca.
-
-## Instalação e execução
-
-Os exemplos a seguir usam **Windows com PowerShell**. Abra o terminal na pasta do projeto depois de baixar ou clonar o repositório.
-
-### 1. Criar o ambiente virtual
-
-```powershell
+~~~powershell
 python -m venv .venv
-```
-
-### 2. Instalar a dependência
-
-```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
+.\.venv\Scripts\python.exe main.py --demo media
+~~~
 
-Os comandos usam diretamente o Python da `.venv`, sem precisar ativar o ambiente virtual.
+Os comandos usam diretamente o Python do ambiente virtual, sem exigir ativação. Os demais exemplos com python pressupõem um terminal que utilize esse ambiente; no PowerShell, você também pode substituí-lo por .\.venv\Scripts\python.exe.
 
-### 3. Configurar a chave da API
+Em Linux ou macOS:
 
-Crie ou consulte sua chave no [Google AI Studio](https://aistudio.google.com/api-keys). Configure a variável de ambiente na mesma sessão do PowerShell em que executará o agente:
+~~~bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python main.py --demo media
+~~~
 
-```powershell
+A versão do SDK foi fixada em 3.3.0, com transporte HTTPX explícito. A atualização inclui a [correção da contagem de tentativas introduzida na versão 3.0](https://github.com/googleapis/python-genai/releases/tag/v3.0.0); o comportamento é conferido por testes de transporte.
+
+## Usar com o Gemini
+
+Obtenha a chave no [Google AI Studio](https://aistudio.google.com/api-keys) e configure-a na sessão atual:
+
+~~~powershell
 $env:GEMINI_API_KEY = "SUA_CHAVE_AQUI"
-```
+~~~
 
-Substitua o texto de exemplo pela sua chave. Essa configuração vale para a sessão atual do terminal. O SDK também reconhece `GOOGLE_API_KEY`; se as duas variáveis estiverem definidas, `GOOGLE_API_KEY` tem prioridade. Consulte a [documentação de chaves do Gemini](https://ai.google.dev/gemini-api/docs/api-key).
+Em Linux ou macOS:
 
-O programa atual não carrega arquivos `.env` automaticamente. Criar esse arquivo, por si só, não configura a autenticação.
+~~~bash
+export GEMINI_API_KEY="SUA_CHAVE_AQUI"
+~~~
 
-### 4. Executar o agente
+O SDK também reconhece GOOGLE_API_KEY, que tem prioridade quando ambas estão definidas. [.env.example](.env.example) documenta as variáveis; arquivos .env **não são carregados automaticamente**.
 
-Mantenha `agent.md` e `memory.md` ao lado de `main.py`. Os dois arquivos são obrigatórios na implementação atual.
+Investigue o exemplo usando a API real:
 
-```powershell
-.\.venv\Scripts\python.exe main.py
-```
+~~~powershell
+.\.venv\Scripts\python.exe main.py --projeto exemplos/media/projeto --erro-arquivo exemplos/media/erro.txt --saida relatorios/media-real.md
+~~~
 
-Cole o erro e seu contexto. Quando terminar, digite `FIM` em uma linha separada.
+Para investigar seu próprio projeto:
 
-## Exemplo de uso
+~~~powershell
+.\.venv\Scripts\python.exe main.py --projeto "C:\caminho\meu-projeto"
+~~~
 
-O arquivo [casos/calculadora.py](casos/calculadora.py) contém este exemplo intencionalmente problemático:
+Cole o erro e o contexto, encerrando com FIM em uma linha separada. O fim da entrada também encerra a coleta. A pasta padrão é [casos/](casos/), relativa ao repositório.
 
-```python
-def calcular_media(valores):
-    return sum(valores) / len(valores)
+O projeto não configura faturamento, não garante disponibilidade de cota gratuita e não troca para outro modelo ou serviço automaticamente. Confira as condições da sua conta antes de usar a API.
 
+## Opções do terminal
 
-print(calcular_media([]))
-```
+~~~powershell
+python main.py --help
+python main.py --version
+~~~
 
-Depois de iniciar o agente, uma entrada possível é:
+| Opção | Uso |
+| --- | --- |
+| --projeto PASTA | Raiz autorizada para as ferramentas. |
+| --erro-arquivo ARQUIVO | Erro em UTF-8, com extensão .txt, .log ou .md; padrão: entrada interativa. |
+| --memoria ARQUIVO.md | Contexto histórico opcional. Uma memória ausente permite continuar. |
+| --saida ARQUIVO.md | Cria um relatório novo; arquivos existentes são recusados antes da consulta. |
+| --modelo NOME | Modelo do Gemini; padrão: gemini-3.6-flash ou AGENTE_MODELO. |
+| --max-consultas N | Orçamento de consultas, incluindo a conclusão; padrão: 5. |
+| --timeout SEGUNDOS | Timeout por consulta; padrão: 30. |
+| --tempo-total SEGUNDOS | Orçamento de tempo conferido entre consultas e ferramentas; padrão: 120. |
+| --demo [CASO] | Reprodução offline com respostas preparadas; padrão: media. |
 
-```text
-Ao calcular a média de uma lista vazia, recebo este erro:
-ZeroDivisionError: division by zero
-O código está em calculadora.py, dentro da pasta casos.
-Quero entender a causa e decidir como tratar uma lista vazia.
-FIM
-```
+O modo de demonstração usa somente os exemplos preparados e não aceita projeto, erro ou memória externos.
 
-O agente pode solicitar a leitura do arquivo para apoiar o diagnóstico. Nesse caso, a operação divide por `len(valores)`, que é zero para uma lista vazia. A correção depende do comportamento desejado, como rejeitar a entrada com uma mensagem clara.
+## Resultado e relatório
 
-Esse exemplo descreve uma investigação possível. A sequência de ferramentas e o texto da análise dependem da resposta do modelo.
+O programa solicita um diagnóstico JSON ao modelo e valida seu formato e suas referências antes de apresentá-lo como análise produzida. Respostas vazias, incompletas ou fora do contrato geram um resultado parcial.
 
-## Testes locais
+O relatório contém problema, evidências com trechos reais, causa provável, correção sugerida, verificação recomendada e pendências. A validação das referências não comprova que o raciocínio ou a correção estão certos.
 
-Os testes usam `unittest` e `unittest.mock`, que fazem parte da biblioteca padrão do Python. Instale a dependência do projeto conforme as instruções acima; não é necessário instalar um framework de testes adicional.
+| Estado | Código de saída | Significado |
+| --- | --- | --- |
+| analise_produzida | 0 | Contrato e referências validados; a correção ainda precisa ser verificada. |
+| falha | 1 | A consulta falhou ou a API informou falha/cancelamento. |
+| Erro de configuração ou entrada | 2 | Chave, pasta, arquivo, argumento ou saída inválidos. |
+| informacao_insuficiente | 3 | O diagnóstico reconheceu a falta de contexto. |
+| parcial | 4 | Limite atingido, resposta incompleta ou diagnóstico não validado. |
+| Cancelamento pelo usuário | 130 | Execução interrompida com Ctrl+C. |
 
-Execute na raiz do projeto:
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-```
-
-A suíte verifica:
-
-- Leitura em UTF-8, limite de caracteres e listagem dos arquivos autorizados.
-- Recusa de caminhos externos, extensões proibidas e arquivos inexistentes.
-- Validação dos argumentos e conversão de falhas das ferramentas em resultados.
-- Continuidade das consultas e associação dos resultados às chamadas por `call_id`.
-- Limites de consultas e de ferramentas por resposta.
-- Fechamento do cliente em caso de sucesso ou falha da API.
-- Importação de `main.py` sem iniciar o terminal ou criar o cliente da API.
-
-As ferramentas são verificadas com arquivos temporários criados dentro de `tests/` e removidos ao final de cada teste. O cliente do Gemini é simulado e conexões de rede são bloqueadas nos testes do fluxo. Não é necessário configurar uma chave da API nem consumir sua cota para executar a suíte.
-
-O teste de links simbólicos pode ser marcado como ignorado (`skipped`) quando o sistema não permitir sua criação. Os testes verificam o comportamento local do programa; não avaliam a qualidade dos diagnósticos nem a disponibilidade do Gemini.
+Falhas e limites preservam a lista dos arquivos já consultados. Não há nova consulta extra após esgotar o orçamento.
 
 ## Ferramentas e limites
 
-| Ferramenta | Argumentos | Comportamento |
+| Ferramenta | Argumentos | Resultado |
 | --- | --- | --- |
-| `listar_arquivos` | Nenhum | Retorna os nomes dos arquivos `.py` diretamente em `casos/`, em ordem alfabética. |
-| `ler_arquivo` | `caminho`: texto | Lê um arquivo `.py` em UTF-8, com caminho relativo a `casos/` e até 20.000 caracteres. |
+| listar_arquivos | Nenhum | Caminhos relativos dos arquivos Python e indicador de truncamento. |
+| ler_arquivo | caminho; linha_inicio e linha_fim opcionais | Caminho, intervalo efetivamente lido e conteúdo numerado. |
 
-- A listagem não percorre subpastas. A leitura aceita arquivos em subpastas desde que permaneçam dentro da pasta autorizada.
-- Caminhos resolvidos para fora de `casos/` são recusados.
-- O programa faz até cinco consultas ao modelo por investigação, conforme `MAX_RODADAS` em `main.py`.
-- Cada resposta pode solicitar até cinco ferramentas. Acima disso, a investigação é interrompida antes de executar o lote.
-- As ferramentas são executadas nas primeiras quatro respostas. Se a quinta ainda pedir ferramentas, o programa informa que a investigação está incompleta. Isso permite até 20 execuções de ferramentas por investigação.
-- Essas contagens se referem ao ciclo do programa. Repetições internas do SDK podem gerar tentativas HTTP adicionais.
+Os valores padrão estão em [configuracao.py](configuracao.py):
 
-O modelo configurado atualmente é `gemini-3.6-flash`, definido na constante `MODELO` em `main.py`. A disponibilidade do modelo e as cotas dependem da conta e do serviço. O projeto não configura faturamento nem troca de modelo automaticamente.
+- Até cinco consultas e cinco ferramentas por resposta; a última consulta é reservada para conclusão sem novas ferramentas.
+- Até 200 arquivos listados, 2.000 entradas examinadas e dez níveis de subpastas.
+- Até 20.000 caracteres por leitura, 20.000 linhas e um milhão de caracteres de varredura por leitura.
+- Até 80.000 caracteres nos resultados bem-sucedidos das ferramentas por investigação.
+- Até 20.000 caracteres de entrada, 10.000 de memória e 30.000 de manual.
+- Até 4.096 tokens de saída por consulta.
 
-## Memória e cuidados com os dados
+Limites em caracteres não equivalem a tokens ou valores monetários. O timeout HTTP limita a espera do transporte; o orçamento total é conferido entre operações, sem prometer interromper instantaneamente uma leitura HTTP já em andamento.
 
-`memory.md` é um arquivo de contexto editado manualmente. O programa lê seu conteúdo inteiro no início e o envia ao Gemini junto com o erro atual. Não há gravação automática de aprendizados nem ferramenta `registrar_memoria` implementada nesta versão.
+## Arquitetura
 
-O manual, o erro informado e os resultados das ferramentas também são enviados à API durante a investigação. Revise o material antes de usar código ou dados de outros projetos.
+~~~mermaid
+flowchart TD
+    CLI[main.py: terminal e configuração] --> CICLO[agente.py: investigação]
+    MANUAL[agent.md e memória opcional] --> CICLO
+    CICLO --> API[cliente_gemini.py]
+    API --> GEMINI[Gemini Interactions API]
+    GEMINI --> CICLO
+    CICLO --> TOOLS[ferramentas.py: leitura autorizada]
+    TOOLS --> CICLO
+    CICLO --> SAIDA[resultado.py: contrato e relatório]
+~~~
 
-- Guarde a chave da API fora do código e do repositório.
-- Mantenha `.venv/`, `__pycache__/` e arquivos `.env` fora do Git, conforme o `.gitignore`.
-- Revise a memória antes de publicá-la: ela pode conter caminhos locais, histórico pessoal ou informações de projetos.
-- Use arquivos de exemplo em `casos/` que possam ser compartilhados com a API e, se publicados, com quem acessar o repositório.
+| Arquivo/pasta | Responsabilidade |
+| --- | --- |
+| [main.py](main.py) | Argumentos, entrada, contexto, criação/fechamento do cliente e código de saída. |
+| [agente.py](agente.py) | Ciclo de consultas, continuidade e encerramento. |
+| [cliente_gemini.py](cliente_gemini.py) | Credenciais, SDK, timeout e mensagens seguras de falha. |
+| [ferramentas.py](ferramentas.py) | Raiz autorizada, descoberta, leitura e orçamento de contexto. |
+| [resultado.py](resultado.py) | Validação do diagnóstico e referências; geração do relatório. |
+| [configuracao.py](configuracao.py) | Configuração tipada e limites. |
+| [demonstracao.py](demonstracao.py) | Cliente de reprodução offline explicitamente identificado. |
+| [agent.md](agent.md) | Manual de investigação enviado ao modelo. |
+| [exemplos/](exemplos/) | Três bugs conhecidos, um caso insuficiente e correções de referência. |
+| [tests/](tests/) | Testes unitários, de arquivos, transporte e fluxo completo com HTTP simulado. |
 
-## Próximas melhorias
+## Memória e dados
 
-- [x] Organizar `main.py` em funções e adicionar um ponto de entrada explícito.
-- [ ] Separar a interface de terminal, o cliente da API e o ciclo de investigação.
-- [ ] Tornar a memória opcional na inicialização e selecionar apenas o contexto relevante.
-- [ ] Configurar explicitamente os tempos limite e a política de repetição do SDK.
-- [x] Adicionar testes locais das ferramentas e do ciclo com respostas simuladas.
-- [ ] Implementar o registro validado de memória, preservando evidências e registros anteriores.
+Nenhuma memória é carregada por padrão, inclusive o arquivo legado memory.md. Para usar contexto histórico, copie [memory.example.md](memory.example.md) para memory.local.md, edite-o e passe --memoria memory.local.md.
+
+A memória selecionada é enviada ao modelo e não é atualizada automaticamente. O manual é obrigatório. Código, erro, memória e resultados das ferramentas são enviados à API durante uma investigação real; revise o material que pretende compartilhar.
+
+O ciclo usa store=True e previous_interaction_id para manter a continuidade das interações no provedor. Isso não é um modo de execução local; consulte as políticas e configurações de dados da sua conta.
+
+As ferramentas recusam caminhos externos, arquivos que não sejam Python e pastas ocultas ou excluídas. A listagem não segue links simbólicos. O programa não executa o código consultado. Estas restrições não substituem o isolamento do sistema operacional para diretórios alterados por processos não confiáveis durante a investigação.
+
+Credenciais, ambientes virtuais, caches, memória local e relatórios gerados estão no [.gitignore](.gitignore). Nunca coloque uma chave real no código ou no arquivo de exemplo.
+
+## Testes e CI
+
+~~~powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m pip check
+~~~
+
+A suíte usa unittest. Não precisa de chave: o cliente é simulado ou o SDK real recebe um httpx.MockTransport. O teste de link simbólico pode ser ignorado quando o Windows não permitir sua criação. A limpeza dos arquivos temporários fica restrita às pastas criadas pelos testes.
+
+O [workflow de testes](.github/workflows/tests.yml) instala as dependências e roda a suíte em Windows e Linux, com Python 3.11 e 3.15, sem configurar segredos de API. Sua primeira execução acontecerá após o envio ao GitHub.
+
+## Portfólio e evolução
+
+O [plano do MVP](docs/PLANO_MVP.md) registra o escopo e o estado das entregas. Os [casos e critérios de avaliação](docs/AVALIACAO.md) distinguem validação local, demonstração preparada e diagnóstico real do modelo.
+
+Interface web, edição e execução automáticas, memória automática, múltiplos agentes e outros provedores ficam fora desta versão.
